@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>TEM-4 Writing Agent（支持追问）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#f0f8ff;
+    --card:#fff;
+    --primary:#0077ff;
+    --primary-dark:#0059d1;
+    --radius:12px;
+    --shadow:0 8px 32px rgba(0,0,0,.08);
+    --font:"SF Pro","Segoe UI",Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);font-family:var(--font);color:#333;line-height:1.6}
+  header{background:#004e92;color:#fff;padding:1rem 2rem;font-size:1.3rem;font-weight:bold}
+  .wrap{max-width:900px;margin:2rem auto;background:var(--card);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+  .pad{padding:2rem 2.5rem}
+  textarea{width:100%;min-height:160px;font-size:16px;padding:14px;border:1px solid #d0d7de;border-radius:var(--radius);resize:vertical}
+  .btn-group{display:flex;gap:.75rem;margin-top:1.5rem}
+  button{
+    flex:1;
+    cursor:pointer;
+    font-size:16px;
+    font-weight:600;
+    color:#fff;
+    background:linear-gradient(145deg,var(--primary),var(--primary-dark));
+    border:none;
+    border-radius:20px;
+    padding:10px 24px;
+    box-shadow:0 4px 12px rgba(0,0,0,.25),inset 0 1px 0 rgba(255,255,255,.3);
+    transition:transform .1s,box-shadow .1s;
+  }
+  button:active{transform:translateY(2px);box-shadow:0 2px 6px rgba(0,0,0,.35)}
+  table{border-collapse:collapse;width:100%;margin-top:1rem}
+  th,td{border:1px solid #e0e0e0;padding:.7rem;text-align:center}
+  th{background:#f7f7f7}
+  .score{font-size:1.3rem;font-weight:bold;color:#0a47ff}
+  .hidden{display:none}
+  #followQ{margin-top:1.5rem}
+  .q-chip{
+    display:inline-block;
+    margin:.25rem;
+    padding:.5rem .75rem;
+    background:#e7f3ff;
+    border-radius:var(--radius);
+    font-size:.9rem;
+    cursor:pointer;
+  }
+  footer{text-align:center;padding:1rem 0;font-size:14px;color:#666;background:var(--bg)}
+</style>
+</head>
+<body>
+
+<header>TEM-4 Writing Agent（支持追问）</header>
+
+<div class="wrap">
+  <div class="pad">
+    <label>写作题目 (Task):</label>
+    <textarea id="taskInput" placeholder="请把题目粘贴进来……"></textarea>
+
+    <label style="margin-top:1rem;display:block">学生作文 (Essay):</label>
+    <textarea id="essayInput" placeholder="请把作文粘贴进来……"></textarea>
+
+    <div class="btn-group">
+      <button onclick="resetPage()">重置</button>
+      <button onclick="evaluateEssay()">开始批改</button>
+      <button onclick="window.print()">导出 PDF</button>
+    </div>
+  </div>
+
+  <!-- 批改结果 -->
+  <div id="resultArea" class="pad hidden">
+    <h2>批改结果</h2>
+    <p><strong>总分：<span id="totalScore" class="score">--</span>/20</strong>（<span id="level">--</span>）</p>
+    <table>
+      <thead>
+        <tr><th>维度</th><th>满分</th><th>得分</th><th>评语</th></tr>
+      </thead>
+      <tbody id="detailTable"></tbody>
+    </table>
+    <h3>逐段点评 & 修改建议</h3>
+    <div id="detailedComments"></div>
+    <h3>高分替换表达</h3>
+    <ul id="wordUpgrade"></ul>
+  </div>
+
+  <!-- 追问区域 -->
+  <div id="followQ" class="pad hidden">
+    <h3>🤔 继续追问</h3>
+    <p>点击下方问题即可快速追问：</p>
+    <div id="qList"></div>
+    <div id="followAnswer" style="margin-top:1rem;"></div>
+  </div>
+</div>
+
+<footer>
+  Powered by GitHub. Copyright@PERRY.
+</footer>
+
+<script>
+/* ---------- 评分维度 ---------- */
+const rubric = [
+  {dim:"内容阐述能力", full:10, desc:"准确表述材料主题、中心内容与要点；讨论切题，观点明确，论据充分"},
+  {dim:"篇章组织能力", full:3,  desc:"段落划分合理，衔接自然，篇幅合适"},
+  {dim:"语言运用能力", full:7,  desc:"词汇准确丰富，语法正确，句式多样，书写规范"}
+];
+
+/* ---------- 追问题库 ---------- */
+const followQuestions = [
+  "如何进一步丰富论据？",
+  "如何优化过渡衔接？",
+  "请指出最突出的语法问题及修改。",
+  "能否给出三个高分句式替换？"
+];
+
+/* ---------- 追问答案 ---------- */
+const followAnswers = {
+  "如何进一步丰富论据？":"可加入数据、名言、实例或对比论证，使论点更具说服力。",
+  "如何优化过渡衔接？":"合理使用连接词：Firstly, Moreover, Furthermore, In conclusion 等，并注意代词回指。",
+  "请指出最突出的语法问题及修改。":"常见问题：主谓一致、时态混乱、冠词缺失。已在上文逐段标注，请重点核对。",
+  "能否给出三个高分句式替换？":"1.Not only...but also... 2.Hardly...when... 3.So...that...（已在上文替换区列出）"
+};
+
+/* ---------- 批改主函数 ---------- */
+function evaluateEssay(){
+  const task = document.getElementById('taskInput').value.trim();
+  const essay = document.getElementById('essayInput').value.trim();
+  if(!task || !essay){ alert("请先填写题目与作文！"); return; }
+
+  const wc = essay.split(/\s+/).filter(Boolean).length;
+  const res = runEvaluation(task, essay, wc);
+  renderResult(res, wc);
+
+  /* 显示追问按钮 */
+  const qHtml = followQuestions.map(q=>`<span class="q-chip" onclick="showAnswer('${q}')">${q}</span>`).join('');
+  document.getElementById('qList').innerHTML = qHtml;
+  document.getElementById('followQ').classList.remove('hidden');
+}
+
+function runEvaluation(task, essay, wc){
+  let c10 = 6, o3 = 2, l7 = 5;
+
+  if(/for example|such as|first|second/i.test(essay)) c10 += 2;
+  if(wc >= 150 && essay.split(/\n+/).filter(p=>p.trim()).length >= 3) c10 += 2;
+  c10 = Math.min(10, c10);
+
+  const paraCnt = essay.split(/\n+/).filter(p=>p.trim()).length;
+  o3 = (paraCnt >= 3 && wc >= 150) ? 3 : (paraCnt >= 2 ? 2 : 1);
+
+  const typo = (essay.match(/(teh|recieve|alot)/gi) || []).length;
+  if(typo === 0) l7 += 1;
+  if((essay.match(/\. [A-Z]/g) || []).length > 5) l7 += 1;
+  l7 = Math.min(7, l7);
+
+  const total = c10 + o3 + l7;
+  const level = total>=18?"一档 (优秀)":total>=15?"二档 (良好)":total>=12?"三档 (尚可)":total>=9?"四档 (问题)":"五档 (失败)";
+
+  const paras = essay.split(/\n+/).filter(p=>p.trim());
+  const comments = paras.map((p,i)=>{
+    let c="";
+    if(p.split(/\s+/).length<20) c+="段落略短；";
+    if(!/[.!?]$/.test(p.trim())) c+="句末缺少标点；";
+    return `<li><strong>段${i+1}：</strong>${p}<br><span style="color:#c62828">${c||"段落结构较好。"}</span></li>`;
+  }).join("");
+
+  const upgrades = {
+    "very important":"crucial / essential",
+    "good":"beneficial / rewarding",
+    "help":"facilitate / assist",
+    "learn from each other":"mutual learning"
+  };
+  const upgradeList = Object.entries(upgrades).map(([k,v])=>`<li><strong>${k}</strong> → ${v}</li>`).join("");
+
+  return {scores:[c10, o3, l7], total, level, comments, upgradeList};
+}
+
+function renderResult(r, wc){
+  document.getElementById('totalScore').textContent = r.total;
+  document.getElementById('level').textContent = r.level;
+
+  const tbody = document.getElementById('detailTable');
+  tbody.innerHTML = "";
+  rubric.forEach((item,i)=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${item.dim}</td><td>${item.full}</td><td>${r.scores[i]}</td><td>${item.desc}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('detailedComments').innerHTML = `<p><strong>字数：</strong>${wc} words</p><ul>${r.comments}</ul>`;
+  document.getElementById('wordUpgrade').innerHTML = r.upgradeList;
+  document.getElementById('resultArea').classList.remove('hidden');
+}
+
+/* ---------- 追问交互 ---------- */
+function showAnswer(q){
+  document.getElementById('followAnswer').innerHTML = `<p><strong>追问：</strong>${q}<br><strong>回答：</strong>${followAnswers[q]}</p>`;
+}
+
+/* ---------- 重置 ---------- */
+function resetPage(){
+  document.getElementById('taskInput').value='';
+  document.getElementById('essayInput').value='';
+  document.getElementById('resultArea').classList.add('hidden');
+  document.getElementById('followQ').classList.add('hidden');
+}
+</script>
+</body>
+</html>
